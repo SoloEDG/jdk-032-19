@@ -1,13 +1,14 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import type { DominoDocument } from '@/shared/document'
+import type { DominoDocument, SimulationRun } from '@/shared/document'
 import { createDefaultDocument } from '@/shared/defaults'
 import { useLayout } from '@/features/layout'
 import { useMechanisms } from '@/features/mechanisms'
 import { useScene, clampToScene } from '@/features/scene'
 import { useSimulation } from '@/features/simulation'
-import { useReview } from '@/features/replay'
+import { useReview, normalizeSimulationRun } from '@/features/replay'
 
 const storageKey = 'chainline-jdk032-project-v1'
+const runStorageKey = 'chainline-jdk032-last-run-v1'
 
 function loadProject() {
   try {
@@ -21,8 +22,20 @@ function loadProject() {
   }
 }
 
+/** 恢复上次运行；经归一化保留旧事件的原始说明，绝不按当前构筑补算取证。 */
+function loadRun(): SimulationRun | null {
+  try {
+    const saved = localStorage.getItem(runStorageKey)
+    if (!saved) return null
+    return normalizeSimulationRun(JSON.parse(saved))
+  } catch {
+    return null
+  }
+}
+
 export function useWorkspace() {
   const document = shallowRef<DominoDocument>(loadProject())
+  const savedRun = loadRun()
   const saveState = ref<'saved' | 'saving' | 'unsaved'>('saved')
   const focusPieceId = ref<string | null>(null)
   let saveTimer = 0
@@ -39,7 +52,7 @@ export function useWorkspace() {
   const layout = useLayout(document, changed)
   const mechanisms = useMechanisms(document, changed)
   const scene = useScene(document, changed)
-  const simulation = useSimulation(document)
+  const simulation = useSimulation(document, savedRun)
   const review = useReview(simulation.run)
 
   watch(document, next => {
@@ -54,6 +67,16 @@ export function useWorkspace() {
       }
     }, 380)
   })
+
+  // 运行快照（含碰撞取证）单独持久化；旧 JSON 由 normalizeSimulationRun 兜底。
+  watch(simulation.run, run => {
+    try {
+      if (run) localStorage.setItem(runStorageKey, JSON.stringify(run))
+      else localStorage.removeItem(runStorageKey)
+    } catch {
+      /* 存储不可用时仅保留内存态，不影响构筑操作。 */
+    }
+  }, { immediate: true })
 
   function place(kind: Parameters<typeof layout.add>[0], x: number, y: number) {
     const piece = { x, y, width: kind === 'ramp' ? 1.7 : 0.42, id: '', kind, label: '', height: 1, angle: 0, facing: 'east' as const, fallThreshold: 0.8, friction: 0.55 }
@@ -73,6 +96,12 @@ export function useWorkspace() {
     layout.select(event.pieceId)
     review.focusEvent(id)
   }
+  /** 从旧运行回到当前构筑：摘除回放覆盖、停止播放并解除定位焦点，保留旧运行记录。 */
+  function backToBuild() {
+    review.backToBuild()
+    focusPieceId.value = null
+    layout.select(null)
+  }
   function onKeydown(event: KeyboardEvent) {
     const target = event.target
     if (target instanceof HTMLElement && target.matches('input, select, textarea, button')) return
@@ -83,6 +112,7 @@ export function useWorkspace() {
       layout.chooseTool(null)
       layout.select(null)
       focusPieceId.value = null
+      review.backToBuild()
     } else {
       layout.handleKey(event)
     }
@@ -93,5 +123,8 @@ export function useWorkspace() {
     window.clearTimeout(saveTimer)
   })
 
-  return { document, saveState, focusPieceId, layout, mechanisms, scene, simulation, review, place, move, focusEvent }
+  return {
+    document, saveState, focusPieceId, layout, mechanisms, scene, simulation, review,
+    place, move, focusEvent, backToBuild,
+  }
 }

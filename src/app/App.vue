@@ -9,9 +9,10 @@ import { ReplayPanel } from '@/features/replay'
 import { useWorkspace } from './useWorkspace'
 
 const {
-  document, saveState, focusPieceId, layout, mechanisms, scene, simulation, review, place, move, focusEvent,
+  document, saveState, focusPieceId, layout, mechanisms, scene, simulation, review, place, move, focusEvent, backToBuild,
 } = useWorkspace()
 const saveLabel = computed(() => saveState.value === 'saved' ? '已保存' : saveState.value === 'saving' ? '保存中' : '尚未保存')
+const canvasRun = computed(() => review.canvasAttached.value ? simulation.run.value : null)
 </script>
 
 <template>
@@ -44,7 +45,7 @@ const saveLabel = computed(() => saveState.value === 'saved' ? '已保存' : sav
           <div class="revision-chip"><Dot :size="19" />修订 {{ document.revision.toString().padStart(2, '0') }}</div>
         </div>
         <BuildCanvas :document="document" :active-tool="layout.activeTool.value" :selected-id="layout.selectedId.value"
-          :run="simulation.run.value" :focus-piece-id="focusPieceId" @place="place" @select="layout.select"
+          :run="canvasRun" :stale="simulation.stale.value" :focus-piece-id="focusPieceId" @place="place" @select="layout.select"
           @move="move" />
         <SimulationBar :run="simulation.run.value" :stale="simulation.stale.value" :busy="simulation.busy.value"
           :issue="simulation.issue.value" @run="simulation.simulate" @reset="simulation.clear" />
@@ -60,7 +61,9 @@ const saveLabel = computed(() => saveState.value === 'saved' ? '已保存' : sav
         <div class="rail-divider"></div>
         <ReplayPanel :run="simulation.run.value" :events="review.events.value" :time="review.time.value"
           :playing="review.playing.value" :current-event="review.currentEvent.value" :stale="simulation.stale.value"
-          @toggle="review.toggle" @seek="review.seek" @restart="review.restart" @event="focusEvent" />
+          :canvas-attached="review.canvasAttached.value" :current-revision="document.revision"
+          @toggle="review.toggle" @seek="review.seek" @restart="review.restart" @event="focusEvent"
+          @back-build="backToBuild" @attach-canvas="review.attachCanvas" />
       </aside>
     </main>
     <footer class="statusbar"><span><AudioWaveform :size="14" /> CHAINLINE FIELD NOTES</span><span>02.4 / MOTION STUDY</span><span>LOCAL PROJECT</span></footer>

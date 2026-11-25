@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Crosshair, MousePointer2 } from '@lucide/vue'
-import type { DominoDocument, Piece, PieceKind, SimulationRun } from '@/shared/document'
+import type { ContactReport, DominoDocument, Piece, PieceKind, SimulationRun } from '@/shared/document'
+import { getEventReport } from '@/features/replay/lib/runArchive'
 
 const props = defineProps<{
   document: DominoDocument; activeTool: PieceKind | null; selectedId: string | null
-  run: SimulationRun | null; focusPieceId: string | null
+  run: SimulationRun | null; focusPieceId: string | null; stale?: boolean
 }>()
 const emit = defineEmits<{
   place: [PieceKind, number, number]; select: [string | null]; move: [string, number, number]
@@ -14,6 +15,16 @@ const svg = ref<SVGSVGElement | null>(null)
 const view = { width: 1040, height: 510, margin: 35 }
 const fallen = computed(() => new Set(props.run?.events.filter(event => event.kind === 'fall').map(event => event.pieceId) ?? []))
 const failed = computed(() => props.run?.interruptedPieceId ?? null)
+
+// 只在运行版本与当前构筑一致时把取证画到画布上；旧布局改过后，
+// 画布元件已在新位置，连线会失真，此时以面板内的运行时快照为准。
+const activeReport = computed<ContactReport | null>(() => {
+  if (!props.run || props.stale || !props.focusPieceId) return null
+  const event = props.run.events.find(item => item.pieceId === props.focusPieceId && getEventReport(item))
+  return event ? getEventReport(event) : null
+})
+const scaleX = computed(() => (view.width - view.margin * 2) / props.document.scene.width)
+const scaleY = computed(() => (view.height - view.margin * 2) / props.document.scene.height)
 let dragging: string | null = null
 
 function worldPoint(event: PointerEvent) {
@@ -49,6 +60,8 @@ function boardClick(event: PointerEvent) {
 }
 function pxX(x: number) { return view.margin + x / props.document.scene.width * (view.width - view.margin * 2) }
 function pxY(y: number) { return view.margin + y / props.document.scene.height * (view.height - view.margin * 2) }
+function midX(sourceX: number, targetX: number) { return (pxX(sourceX) + pxX(targetX)) / 2 }
+function midY(sourceY: number, targetY: number) { return (pxY(sourceY) + pxY(targetY)) / 2 }
 function pieceColor(piece: Piece) {
   if (piece.id === failed.value) return '#e88b69'
   if (fallen.value.has(piece.id)) return '#89c5a5'
@@ -115,6 +128,22 @@ function eventTime(pieceId: string) {
       <g v-if="focusPieceId" class="focus-reticle" pointer-events="none">
         <circle :cx="pxX(document.pieces.find(piece => piece.id === focusPieceId)?.x ?? 0)" :cy="pxY(document.pieces.find(piece => piece.id === focusPieceId)?.y ?? 0)" r="25" />
         <circle :cx="pxX(document.pieces.find(piece => piece.id === focusPieceId)?.x ?? 0)" :cy="pxY(document.pieces.find(piece => piece.id === focusPieceId)?.y ?? 0)" r="32" />
+      </g>
+
+      <g v-if="activeReport" class="contact-overlay" pointer-events="none" data-testid="canvas-contact-overlay"
+        :data-source="activeReport.sourceId" :data-winner="activeReport.winnerId">
+        <ellipse v-if="activeReport.reach !== null" class="reach-boundary"
+          :cx="pxX(activeReport.sourceX)" :cy="pxY(activeReport.sourceY)"
+          :rx="activeReport.reach * scaleX" :ry="activeReport.reach * scaleY" />
+        <line v-for="candidate in activeReport.candidates" :key="`contact-link-${candidate.pieceId}`"
+          class="contact-link" :class="[candidate.reasonCode, { selected: candidate.selected }]"
+          :x1="pxX(activeReport.sourceX)" :y1="pxY(activeReport.sourceY)"
+          :x2="pxX(candidate.x)" :y2="pxY(candidate.y)"
+          :data-testid="`canvas-contact-${candidate.pieceId}`" :data-verdict="candidate.reasonCode" />
+        <text v-for="candidate in activeReport.candidates" :key="`contact-tag-${candidate.pieceId}`"
+          class="contact-distance-tag" :class="candidate.reasonCode"
+          :x="midX(activeReport.sourceX, candidate.x)" :y="midY(activeReport.sourceY, candidate.y) - 4"
+          text-anchor="middle">{{ candidate.distance.toFixed(2) }}m · {{ candidate.alignment.toFixed(0) }}°</text>
       </g>
       <g class="board-scale" pointer-events="none"><path d="M 0 0 H 80 M 0 0 V -5 M 80 0 V -5" /><text x="40" y="15" text-anchor="middle">2 M</text></g>
     </svg>

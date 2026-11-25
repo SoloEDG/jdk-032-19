@@ -1,5 +1,7 @@
-import type { DominoDocument, Piece, SimulationEvent } from '@/shared/document'
-import { nextContact } from '@/features/layout'
+import type {
+  ContactReport, DominoDocument, SimulationEvent,
+} from '@/shared/document'
+import { inspectContacts, inspectRampContacts, CONTACT_EVIDENCE_VERSION } from '../../layout/lib/contacts'
 
 interface Scheduled {
   pieceId: string
@@ -8,10 +10,30 @@ interface Scheduled {
   detail: string
 }
 
-export function propagate(document: DominoDocument) {
+export interface PropagationResult {
+  events: SimulationEvent[]
+  contactReports: ContactReport[]
+  interruptedPieceId: string | null
+  interruptionReason: string | null
+  reachedTrigger: boolean
+  status: 'complete' | 'interrupted' | 'empty'
+  duration: number
+}
+
+/** 把同一份取证快照挂到事件上；contactReport 为权威字段，其余为兼容视图。 */
+function withEvidence(event: SimulationEvent, report: ContactReport): SimulationEvent {
+  event.contactReport = report
+  event.collision = report
+  event.contacts = report.candidates
+  event.evidenceVersion = CONTACT_EVIDENCE_VERSION
+  return event
+}
+
+export function propagate(document: DominoDocument): PropagationResult {
   const queue: Scheduled[] = [{ pieceId: document.startPieceId, time: 0, causeId: null, detail: '手动触发' }]
   const fallen = new Set<string>()
   const events: SimulationEvent[] = []
+  const contactReports: ContactReport[] = []
   let interruptedPieceId: string | null = null
   let interruptionReason: string | null = null
   let reachedTrigger = false
@@ -51,16 +73,20 @@ export function propagate(document: DominoDocument) {
     const available = document.pieces.filter(item => !fallen.has(item.id) && item.id !== piece.id)
     const surfaceGrip = (document.scene.friction + piece.friction) / 2
     const reachScale = (0.94 + surfaceGrip * 0.35) * (1.25 - piece.fallThreshold * 0.25)
-    let target: Piece | null = null
-    if (piece.kind === 'ramp') {
-      target = available.filter(item => item.x > piece.x && Math.abs(item.y - piece.y) < 2.1)
-        .sort((a, b) => a.x - b.x || a.id.localeCompare(b.id))[0] ?? null
-    } else {
-      target = nextContact(piece, available, reachScale)
-    }
+    const speed = Math.max(1.8, piece.height * document.scene.gravity / 2) * (0.75 + surfaceGrip * 0.5)
+
+    // 接触判定与取证共用同一份结果：胜出 id 即目标，避免“判定一套、解释一套”。
+    const report = piece.kind === 'ramp'
+      ? inspectRampContacts(piece, available, { time: next.time })
+      : inspectContacts(piece, available, { reachScale, time: next.time, speed })
+    contactReports.push(report)
+    withEvidence(event, report)
+
+    const target = report.winnerId
+      ? document.pieces.find(item => item.id === report.winnerId) ?? null
+      : null
     if (target) {
       const separation = Math.hypot(piece.x - target.x, piece.y - target.y)
-      const speed = Math.max(1.8, piece.height * document.scene.gravity / 2) * (0.75 + surfaceGrip * 0.5)
       const travel = Math.max(0.24, separation / speed)
       queue.push({
         pieceId: target.id, time: next.time + travel, causeId: event.id,
@@ -71,16 +97,21 @@ export function propagate(document: DominoDocument) {
     const hasConnection = document.connections.some(link => link.from === piece.id && link.enabled)
     if (!target && !hasConnection && interruptedPieceId === null) {
       interruptedPieceId = piece.id
+      // 基础说明保持原文案不变（历史事件也是这句话）；
+      // “是哪一次碰撞失手”由挂载的 contactReport 逐枚举证，而不是改写成只怪最近对象。
       interruptionReason = '倒下方向内没有可触达的元件，链路在此停止。'
-      events.push({
+      const interruptedEvent: SimulationEvent = {
         id: `event-${events.length + 1}`, pieceId: piece.id, time: next.time + 0.05,
         causeId: event.id, kind: 'interrupted', detail: interruptionReason,
-      })
+      }
+      withEvidence(interruptedEvent, report)
+      events.push(interruptedEvent)
     }
   }
 
   return {
     events,
+    contactReports,
     interruptedPieceId,
     interruptionReason,
     reachedTrigger,
